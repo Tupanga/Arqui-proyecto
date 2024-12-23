@@ -1,0 +1,1093 @@
+ORG 0H
+
+;VARIABLES
+ESTADO	EQU	0x20
+EVENTO	EQU	0x21
+
+SEM_V	EQU	P0.0
+SEM_R	EQU	P0.1
+S_PLAT	EQU	P0.2
+F_TIPO	EQU	P0.3
+S_FICHA	EQU	P0.4
+P_START	EQU	P0.5	;pulsador comienzoi
+A_START	EQU	P0.6	;alarma
+B_START	EQU	P0.7	;Fin de carrera/posición de reposo del puente de lavado 
+
+B_MOV_F	EQU	P1.0	;Mueve puente lavado hacia alante
+B_MOV_B	EQU	P1.1	;Mueve puente hacia atras
+FC_RH_T	EQU	P1.2	;Sensor rodillo horizontal en su parte mas alta = retirado
+RH_UP	EQU	P1.3	;Mover arriba rodillo horiz
+RH_DOWN	EQU	P1.4	;Mover abajo rodillo horiz
+FC_RV_B	EQU	P1.5	;Fin rodillos verticales exterior = retirado
+RV_OUT	EQU	P1.6	;Mover hacia fuera rodillos verticales
+RV_IN	EQU	P1.7	;Hacia dentro los rodillos verti
+
+EV_AGU	EQU	P2.0	;Activa agua
+EV_JBN	EQU	P2.1	;Activa jabon
+S_CAR	EQU	P2.3	;Sensor vehiculo sitio lavado
+FC_RV_C	EQU	P2.4	;Fin rodillo verticales interior
+LED_LN	EQU	P2.5	;led lv normal
+LED_LI	EQU	P2.6	;led lavado intenso
+
+
+ADCON   EQU	0C5H   ; BYTE DE CONFIGURACION DE ADC
+ADCH    EQU	0C6H   ; BYTE DONDE SE GUARDA EL VALOR DE LECTURA DEL ADC
+PWMP    EQU	0FEH   ; BYTE DEL PRESCALER DEL PWM 
+PWM0    EQU	0FCH   ; BYTE DONDE SE GUARDA EL DUTY CYCLE
+PWM1    EQU	0FDH   ; BYTE DE CONFIGURACION DEL CANAL 1 DEL PWM
+
+;constantes 
+PWM_NORR EQU 	80H	;valor PWM lavado normal RODILLO 50%
+PWM_INTR EQU	0H	;valor PWM lavado intenso rodillo 100%
+PWM_NORV EQU	80H	;valor PWM LAVADO NORMAL VENTILADOR 50%
+PWM_INTV EQU	0D9H 	;valor PWM LAVADO INTENSO VENTILADOR 85% 
+
+
+;vbles de estado (FLAGS_FICHA EQU 0BH) (iban desde 20H hasta 28H)
+FLAG_TIMER_4S 	 EQU	0x22.0 ;FLAG PARA COMPROBAR SI EL TIMER HAY QUE USARLO PARA 4 SEGUNDOS O PARA 5
+;ESF		 EQU	0x22.1 ;VARIABLE AUXILIAR
+FLAG_ESTADO_5	 EQU	0x22.2	
+FLAG_ALARMA_EST3 EQU	0x22.3	
+FLAG_EST9	 EQU 	0x22.4	
+TICK_ADC	 EQU	0x22.5
+FLAG_TIMER_100MS EQU	0x22.6
+FLAGDIST100	 EQU	0x22.7
+FLAG_TIMER_4S2	 EQU	0x23.0
+FLAG_5SEGS	 EQU	0x23.1
+FLAG_ESTADO_2	 EQU	0x23.2
+FLAG_E1		 EQU    0x23.3
+FLAG_E4		 EQU	0x23.4
+FLAG_PRIMERA	 EQU	0x23.5
+FLAG_TIMER	 EQU	0x23.6
+FLAG_4S_E5	 EQU	0X23.7
+VALOR1		 EQU	0x24
+VALOR2		 EQU	0x25
+PRIMER7		 EQU	0x26.0
+FLAG_TIMER7	 EQU	0X26.1
+FLAGALFIN	 EQU	0X26.2
+NOVUELVAS	 EQU	0X26.3
+MIRADO		 EQU	0X26.4
+
+ORG 0H
+	AJMP INICIO
+
+;vectores de interrupcion 
+ORG 0BH;TIMER0
+	LJMP TIMER_0
+	
+ORG 1BH ;Timer 1
+	LJMP TIMER_1
+
+ORG 53H ;INTERRUCPICIN DE ADC
+	LJMP LEER_ADC 
+
+ORG 7BH
+INICIO:
+	ACALL INIT
+
+PPAL:
+	ACALL MAQ_ESTADOS	;PROGRAMA PRINCIPAL
+	AJMP PPAL
+
+MAQ_ESTADOS:
+	MOV A, ESTADO
+ 	RL A
+	MOV DPTR, #LISTA_EST
+ 	JMP @A+DPTR
+
+LISTA_EST:
+	AJMP EN_ESPERA		; Nombre Estado 0
+	AJMP COCHE_PLAT		; Nombre Estado 1
+ 	AJMP ESP_FICHA		; Nombre Estado 2
+ 	AJMP ESP_INICIO		; Nombre Estado 3
+	AJMP INICIO_LIMPIADO	; Nombre Estado 4
+	AJMP EJABONADO		; Nombre Estado 5
+	AJMP RODILLO_FROTA	; Nombre Estado 6
+	AJMP ENJUAGADO		; Nombre Estado 7
+	AJMP VIENTO_SECADO	; Nombre Estado 8
+	AJMP FINAL_FELIZ	; Nombre Estado 9
+
+INIT: 
+	MOV A, #0  		;0 PORQUE ESTA APAGADO
+    	MOV PWM0, A
+
+	MOV A, #0  		;0 PORQUE ESTA APAGADO
+    	MOV PWM1, A
+
+
+	; Configuración de los pines como entradas
+	; Configurar P0: Pines 2, 3, 4, 5 y 7 como entradas
+	MOV A, P0              	; Leer el valor actual del Puerto 0ç
+	ANL A, #0H
+	ORL A, #0BCH    	; Configurar los bits 2, 3, 4, 5 y 7 como entradas
+	MOV P0, A		; Escribir el valor modificado en P0
+
+	; Configurar P1: Pines 2 y 5 como entradas
+	MOV A, P1             	; Leer el valor actual del Puerto 1
+	ANL A, #0H
+	ORL A, #024H		; Configurar los bits 2 y 5 como entradas
+	MOV P1, A             	; Escribir el valor modificado en P1
+
+	; Configurar P2: Pines 3 y 4 como entradas
+	MOV A, P2		; Leer el valor actual del Puerto 2
+	ANL A, #0H
+	ORL A, #018H     	; Configurar los bits 3 y 4 como entradas
+	MOV P2, A              	; Escribir el valor modificado en P2
+
+	;PONEMOS A 0 TODOS LOS FLAGS
+	CLR FLAG_TIMER_4S    ; Limpia el bit FLAG_TIMER_4S (0x22.0)
+	;CLR ESF              ; Limpia el bit ESF (0x22.1)
+	CLR FLAG_ESTADO_5    ; Limpia el bit FLAG_ESTADO_5 (0x22.2)
+	CLR FLAG_ALARMA_EST3 ; Limpia el bit FLAG_ALARMA_EST3 (0x22.3)
+	CLR FLAG_EST9        ; Limpia el bit FLAG_EST9 (0x22.4)
+	CLR TICK_ADC         ; Limpia el bit TICK_ADC (0x22.5)
+	CLR FLAG_TIMER_100MS ; Limpia el bit FLAG_TIMER_100MS (0x22.6)
+	CLR FLAGDIST100      ; Limpia el bit FLAGDIST100 (0x22.7)
+	CLR FLAG_TIMER_4S2   ; Limpia el bit FLAG_TIMER_4S2 (0x23.0)
+	CLR FLAG_5SEGS       ; Limpia el bit FLAG_5SEGS (0x23.1)
+	CLR FLAG_ESTADO_2
+	CLR FLAG_E1
+	CLR FLAG_PRIMERA
+	CLR FLAG_TIMER
+	CLR FLAG_4S_E5
+	CLR PRIMER7
+	CLR FLAG_TIMER7
+	CLR FLAGALFIN
+	CLR NOVUELVAS
+	CLR MIRADO
+	SETB SEM_V			;Al principio el semaforo verde está a 1
+
+	RET
+
+
+;estados de la maquina
+EN_ESPERA:
+	ACALL ES0_GEN_EV 
+	ACALL MQ_EVEN_0
+ 	RET
+
+COCHE_PLAT:
+	ACALL ES1_GEN_EV
+	ACALL MQ_EVEN_1
+ 	RET
+
+ESP_FICHA:
+	ACALL ES2_GEN_EV 
+	ACALL MQ_EVEN_2
+ 	RET
+
+ESP_INICIO:
+	ACALL ES3_GEN_EV
+	ACALL MQ_EVEN_3
+ 	RET
+
+INICIO_LIMPIADO:
+	ACALL ES4_GEN_EV 
+	ACALL MQ_EVEN_4
+ 	RET
+
+EJABONADO:
+	ACALL ES5_GEN_EV 
+	ACALL MQ_EVEN_5
+ 	RET
+
+RODILLO_FROTA:
+	ACALL ES6_GEN_EV
+	ACALL MQ_EVEN_6
+ 	RET
+
+ENJUAGADO:
+	ACALL ES7_GEN_EV
+	ACALL MQ_EVEN_7
+ 	RET
+
+VIENTO_SECADO:
+	ACALL ES8_GEN_EV
+	ACALL MQ_EVEN_8
+ 	RET
+
+FINAL_FELIZ:
+	ACALL ES9_GEN_EV
+	ACALL MQ_EVEN_9
+ 	RET
+
+
+;-----------------------------------MAQUINAS DE EVENTOS----------------------------------------------------------------------------------------------------------------------------------
+
+MQ_EVEN_0: ;==ESTADO 0 = ESPERANDO ------------------------------------------------------------------------------------------------------------------------------------------------------
+	MOV A, EVENTO
+	RL A
+ 	MOV DPTR, #LIST_EVEN_MQEV_0
+ 	JMP @A+DPTR
+
+LIST_EVEN_MQEV_0: ;LISTA EVENTOS ESTADO 0
+	AJMP ME0_EV_0 ; Evento 0
+	AJMP ME0_EV_1 ; Evento 1
+ME0_EV_0 :
+	RET
+
+ME0_EV_1 :;EL COCHE LLEGA Y SE COLOCA EN PLATAFORMA (S_PLAT=1 [P0.2])--> SEM_V=0[P0.0], SEM_R=1[P0.1]
+	CLR  SEM_V            ; Apagar semáforo verde
+	SETB SEM_R            ; Encender semáforo rojo
+	MOV ESTADO, #1             ; Siguiente estado: COCHE_PLAT
+ 	RET
+
+ES0_GEN_EV:
+	JB S_PLAT, PISADO    	;Si S_PLAT=1[P0.2], salta
+	SJMP CONTINUAR_0	;BRK--
+CONTINUAR_0:
+	MOV EVENTO, #0
+	RET
+PISADO:
+	MOV VALOR1, #76
+	MOV VALOR2, #5
+	ACALL INICIAR_TIMER_0 	;SE HACE UNA LLAMADA A INICIAR TIMER 0 EL CUAL CUENTA 5 SEGUNDOS
+	MOV EVENTO, #1
+RET
+
+; == ESTADO 1 == COCHE EN PLATAFORMA --------------------------------------------------------------------------------------------------------------------------------------------------
+MQ_EVEN_1:
+	MOV A, EVENTO
+	RL A
+	MOV DPTR, #LIST_EVEN_MQEV_1
+	JMP @A+DPTR
+
+LIST_EVEN_MQEV_1:
+	AJMP ME1_EV_0
+	AJMP ME1_EV_1
+	AJMP ME1_EV_2
+
+ME1_EV_0:
+	RET
+ME1_EV_1: ;COCHE HA ESTADO 5 SEGS EN PLATFORMA--> PASA AL ESTADO 2	
+	MOV ESTADO, #2             	;Siguiente ESTADO : 2
+	ACALL APAGAR_TIMER_0 	;APAGAMOS EL TIMER 0 PORSEACASO SIGUE ACTIVO
+	CLR FLAG_5SEGS		;PONEMOS A 0 PARA QUE LUEGO NO ENTRE AQUI
+	CLR FLAG_PRIMERA
+	MOV R5, #2
+	CLR FLAG_E4
+	ACALL INICIAR_TIMER_1
+	RET
+
+ME1_EV_2: ; SE RETIRA EL COCHE (S_PLAT=0[P0.2]). SEM_V=1[P0.0], SEM_R=0[P0.1] Y PASA A ESTADO 0 	
+	CLR	SEM_R
+        SETB	SEM_V
+	ACALL APAGAR_TIMER_0
+	MOV ESTADO, #0             ;Siguiente ESTADO : 0
+	RET
+
+ES1_GEN_EV:
+	JB FLAG_TIMER, FIN_TIMER
+	JNB S_PLAT, SEFUE_1 	;Si S_PLAT=0[P0.2], salta a la etiqueta 
+	MOV EVENTO, #0
+	RET			;BRK--
+FIN_TIMER:
+	MOV EVENTO, #1
+	RET
+SEFUE_1:
+	MOV EVENTO, #2 ;evento numero 1 = retira el coche
+	RET
+
+; == ESTADO 2 == ESPERAR FICHA --------------------------------------------------------------------------------------------------------------------------------------------------------
+MQ_EVEN_2:
+	MOV A, EVENTO
+	RL A
+	MOV DPTR, #LIST_EVEN_MQEV_2
+	JMP @A+DPTR
+
+LIST_EVEN_MQEV_2:
+	AJMP ME2_EV_0
+	AJMP ME2_EV_3
+	AJMP ME2_EV_4
+	AJMP ME2_EV_5
+
+ME2_EV_0:
+	RET
+ME2_EV_3:;METO FICHA (S_FICHA=1[P0.4])--> APAGAR ALARMA[P0.6=0] y paso a estado 3
+	CLR A_START		;APAGAR ALARMA
+	ACALL APAGAR_TIMER_1 	;SE APAGA EL TIMER 1 POR SI SIGUE ENCENDIDO
+	MOV ESTADO, #3             	;Siguiente ESTADO : 3
+	MOV R5, #2
+	ACALL INICIAR_TIMER_1 		;timer de 30 segundos
+	CLR FLAG_ALARMA_EST3
+	CLR FLAG_ESTADO_2
+	CLR FLAG_PRIMERA
+	
+	;DEPENDIENDO QUE FICHA SE HAYA INTRODUCIDO SE ENCIENDE UN LED U OTRO
+	JB F_TIPO, LUZINT		;SI F_TIPO ES 1, SALTA A LUZINT
+	JNB F_TIPO, LUZNORM		;SI F_TIPO ES 0, SALTA A LUZNORM	
+	RET
+LUZINT:
+	SETB LED_LI		;ENCENDER LED LAVADO INTENSO
+	RET
+	
+LUZNORM:
+	SETB LED_LN		;ENCENDER LED LAVADO NORMAL
+	RET
+	
+ME2_EV_4:;PASAN 30 SEGS SIN FICHA -->ACTIVAR ALARMA[P0.6=1] Y SE QUEDA EN EL MISMO ESTADO
+	SETB A_START	;ACTIVAR ALARMA
+	CLR FLAG_PRIMERA
+	SETB FLAG_ESTADO_2
+	MOV ESTADO, #2	
+	RET
+
+ME2_EV_5:;SE RETIRA EL COCHE(S_PLAT=0[P0.2]) --> SEM_V=1[P0.0], SEM_R=0[P0.1], APAGAR ALARMA EN CASO DE QUE ESTÉ ACTIVA Y PASO A ESTADO 0
+	CLR	A_START		;APAGAR ALARMA
+	CLR	SEM_R
+	SETB	SEM_V	
+	ACALL APAGAR_TIMER_1 	;SE APAGA EL TIMER 1 QUE ESTA ENCENDIDO
+	MOV ESTADO, #0             	;Siguiente ESTADO : 0
+	RET
+
+
+ES2_GEN_EV:
+	JB FLAG_PRIMERA, CAMBIAR_E4
+	JNB S_PLAT, SEFUE_2 	;Si S_PLAT=0[P0.2], salta a la etiqueta 
+	JB S_FICHA, METIDA 	;Si S_FICHA=1[P0.4], salta. tmb tendriamos q parar el timer
+	MOV EVENTO, #0
+	RET			;BRK---
+CAMBIAR_E4: ;Sigo en el mismo estaado, han pasado 30segs
+	MOV EVENTO, #2
+	RET			;BRK2---
+SEFUE_2:
+	MOV EVENTO, #3 		;evento numero 2 = retira el coche
+	RET
+METIDA:
+	MOV EVENTO, #1 		;evento numero 0
+	RET
+	
+; == ESTADO 3 == ESPERAR INICIO ------------------------------------------------------------------------------------------------------------------------------------------------------
+MQ_EVEN_3:
+	MOV A, EVENTO
+	RL A
+	MOV DPTR, #LIST_EVEN_MQEV_3
+	JMP @A+DPTR
+
+LIST_EVEN_MQEV_3:
+	AJMP ME3_EV_0
+	AJMP ME3_EV_3
+	AJMP ME3_EV_6
+	AJMP ME3_EV_7
+
+ME3_EV_0:
+	RET
+ME3_EV_3:;HAN PASADO 30SEGS DESDE QUE HA METIDO LA FICHA Y EL USUARIO NO HA PULSADO NINGUN BOTON -->ACTIVAMOS LA ALARMA[P0.6=1] Y NO SE MUEVE DE ESTADO
+	SETB A_START		;ENCENDER ALARMA	
+	ACALL APAGAR_TIMER_1
+	CLR FLAG_PRIMERA
+	ACALL INICIAR_TIMER_1
+	MOV ESTADO, #3
+	RET
+
+ME3_EV_6: ;SE PULSA INICIO DE LAVADO(P_START=1[P0.5])--> PASO A ESTADO4, APAGAR ALARMA[P0.6=0]
+	CLR A_START		;APAGAR ALARMA	
+	CLR FLAG_ALARMA_EST3	;SE APAGA EL FLAG QUE USAMOS PARA QUE EL TIMER SEPA QUE ESTAMOS EN ESTE ESTADO
+	MOV ESTADO, #4             	;Siguiente ESTADO : 4
+	RET
+
+ME3_EV_7:;TRAS 30 segs CON LA ALARMA ACTIVADA (PORQUE EL USUARIO NO HA PRESIONADO NINGUN BOTON)-->IR A ESTADO4, APAGAR ALARMA[P0.6=0]
+	CLR A_START			;APAGAR ALARMA
+	CLR FLAG_ALARMA_EST3	 	;SE APAGA EL FLAG QUE USAMOS PARA QUE EL TIMER SEPA QUE ESTAMOS EN ESTE ESTADO
+	MOV ESTADO, #4             	;Siguiente ESTADO : 4
+	SETB B_MOV_F 			;PONEMOS A 1EL BIT == ESTÁ AVANZANDO EL PUENTE
+	RET
+
+ES3_GEN_EV:;activar timer de 30 segundos para que active alarma si pasan 30 segs sin introducir ficha y si vuelven a pasar 30 segs con alarma se cambia de estado	
+	JB FLAG_PRIMERA, CAMBIAR_A0 
+	JB FLAG_E4, CAMBIAR_A4
+	JB P_START, PULSIN 		;Si P_START=1[P0.5], salta. tmb tendriamos q parar el timer
+    	MOV EVENTO, #0
+	RET				;BRK----
+PULSIN:;se ha pulsado inicio
+	MOV EVENTO, #2 		
+	RET
+CAMBIAR_A0:;han pasado 30 segs
+	MOV EVENTO, #1
+	RET				;BRK2---
+CAMBIAR_A4:;han pasado 30 segs por segunda vez
+	MOV EVENTO, #3
+	RET				;BRK3---
+
+
+; == ESTADO 4 == COMIENZO LAVADO ------------------------------------------------------------------------------------------------------------------------------------------------------
+MQ_EVEN_4:
+	MOV A, EVENTO
+	RL A
+	MOV DPTR, #LIST_EVEN_MQEV_4
+	JMP @A+DPTR
+
+LIST_EVEN_MQEV_4:
+	AJMP ME4_EV_0
+	AJMP ME4_EV_8
+
+ME4_EV_0:
+	RET
+ME4_EV_8:;PASA A ESTADO 5	 	
+	MOV ESTADO, #5             ; Siguiente ESTADO : 5	CLR EV_
+	SETB EV_AGU
+	SETB EV_JBN
+	SETB B_MOV_F 			;CREO QUE YA ESTABA A 1 PERO LO PONGO POR SI ACASO
+	CLR FLAG_4S_E5
+	ACALL APAGAR_TIMER_0
+	RET
+
+ES4_GEN_EV:;EL PUENTE SE MUEVE HACIA EL COCHE A 10CM/S CON LA SEÑAL B_MOV_F=1[P1.0] Y CUANDO S_CAR=1[P2.3]-->EVENTO 8 (PASA AL ESTADO 5)
+	ACALL APAGAR_TIMER_1
+	JB S_CAR, DETEC_4 	;Si S_CAR=1[P2.3], salta. 
+	MOV EVENTO, #0
+	RET			;BRK---
+DETEC_4:
+	MOV EVENTO, #1 		;evento numero 0 en la lista DEL ESTADO 4
+	RET
+
+; == ESTADO 5 == ENJABONAR -----------------------------------------------------------------------------------------------------------------------------------------------------------
+MQ_EVEN_5:
+	MOV A, EVENTO
+	RL A
+	MOV DPTR, #LIST_EVEN_MQEV_5
+	JMP @A+DPTR
+
+LIST_EVEN_MQEV_5:
+	AJMP ME5_EV_0
+	AJMP ME5_EV_9
+	AJMP ME5_EV_9_1
+
+ME5_EV_0:
+	RET
+ME5_EV_9:;APAGAR ELECTROVALVULAS(P2.0=0 Y P2.1=0) Y AVANZAR 40CM MAS DEL BORDE DEL COCHE (4 SEGUNDOS) Y DESPUES PASAR A ESTADO 6 
+	CLR EV_AGU
+	CLR EV_JBN
+	JNB FLAG_4S_E5, INIT0	;SOLO ACTIVAR EL TIMER LA PRIMERA VEZ	
+	;CLR FLAG_TIMER	
+	;SETB TR0
+	RET
+
+INIT0:	;HAGO ESTA SUBRUTINA PORQUE SOLO SE TIENE QUE INICIAR UNA VEZ	
+	MOV VALOR2, #4
+	ACALL INICIAR_TIMER_0
+	SETB FLAG_4S_E5
+	MOV EVENTO, #0
+	RET	
+
+
+ME5_EV_9_1:
+	MOV ESTADO, #6             	;Siguiente ESTADO : 6
+	;RODILLOS VERTICALES SE MUEVEN HACIA DENTRO (RV_IN=1[P1.7]) HASTA CONSEGUIR ESTAR A 80CM UNO DEL OTRO, LA SEÑAL FC_RV_C[P2.4] INDICA CUANDO SE HA CONSEGUIDO ESTA POSICIÓN
+	SETB RV_IN          		;Activa movimiento hacia dentro
+	CLR TR1				;APAGAMOS PORQ NOS HA DADO PROBLEMASSSS
+	;configuramos rodillos
+	MOV IE, #0xC8
+	JB F_TIPO, SALTA_INT		;SI ES 1 SALTA A ACTIVAR rodillo INTENSO
+	JNB F_TIPO, SALTA_NORM		;SI ES 0 SALTA A ACTIVAR rodillo NORMAL
+	
+	RET
+	
+ES5_GEN_EV:    ;EXPULSA AGUA Y JABON POR ELECTROVALVULAS (P2.0=1 Y P2.1=1) MIENTRAS AVANZA EL PUENTE (B_MOV_F=P1.0=1) HASTA QUE S_CAR=0[P2.3](EVENTO 9).
+	JB S_CAR, SEGUIR 	;Si S_CAR=1[P2.3], salta. 
+	JB FLAG_TIMER, F_4S  	;Salta a F_4S si FLAG_TIMER=1
+	MOV EVENTO, #1 		;evento numero 0 en la lista DEL ESTADO 5
+	RET
+SEGUIR:
+	CLR FLAG_TIMER		
+	MOV EVENTO, #0
+	RET			;BRK---
+F_4S:
+	MOV EVENTO, #2
+	RET
+	
+SALTA_INT:
+    	ACALL ACTRODINT          ;Salto largo a rodillo intenso
+	RET
+
+SALTA_NORM:
+    	ACALL ACTRODNORM         ;Salto largo a rodillo normal
+	RET
+	
+; == ESTADO 6 == FROTADO CON RODILLOS -------------------------------------------------------------------------------------------------------------------------------------------------
+MQ_EVEN_6:	
+	MOV A, EVENTO
+ 	RL A
+	MOV DPTR, #LIST_EVEN_MQEV_6
+    	JMP @A+DPTR
+
+LIST_EVEN_MQEV_6:
+	AJMP ME6_EV_0
+	AJMP ME6_EV_10
+
+ME6_EV_0:
+	RET
+ME6_EV_10:;CUANDO FC_RH_T=1[P1.2] Y FC_RV_B=1[P1.5] --> PASAR AL ESTADO 7
+	;APAGAMOS RODILLOS
+	MOV A, #0  		;0 PORQUE ESTA APAGADO
+    	MOV PWM0, A         	;Configura PWM0 con el duty cycle deseado
+	MOV ESTADO, #7             	;Siguiente ESTADO : 7
+	;AVANZA(B_MOV_F[P1.0]) HASTA DETECTAR COCHE(S_CAR[P2.3]) Y AHI ACTIVAR ELECTROVALVULAS AGUA (EV_AGU[P2.0]) AVANZA HASTA DEJAR DE DETECTAR COCHE (EVENTO 11) 
+	SETB B_MOV_F			;[P1.0]
+	CLR FLAG_ESTADO_5
+	SETB FLAG_TIMER_4S2 ;PONEMOS A 1 EL FLAG PARA Q LUEGO EL TIMER 0 SEPA QUE TIENE Q CONTAR 4 SEGS
+	CLR FLAG_TIMER_100MS
+	RET
+
+
+ES6_GEN_EV:	
+	JB FC_RV_C, STOP_RV_IN 	;Si ESTÁ A 80 CM UNO DEL OTRO (FC_RV_C=1[P2.4])
+	MOV EVENTO, #0
+	RET			;BRK---
+
+STOP_RV_IN:
+    	CLR RV_IN       	;Detiene movimiento hacia dentro
+
+	;TRAS ESTO, EMPRENDEN EL CAMINO DE VUELTA (RV_OUT=1[P1.6=1]) HASTA LLEGAR AL BORDE DEL PUENTE (FC_RV_B=1[P1.5=1]) AQUI YA SE HA LIMPIADO LA PARTE TRASERA DEL VEHICULO
+	SETB RV_OUT         		;Activa movimiento hacia fuera
+	ESP_RV_BORDE:
+    		JB FC_RV_B, STOP_RV_OUT ;Si se alcanza el borde [P1.5=1] SALTA
+    		;SJMP ESP_RV_BORDE       ;BRK2----
+		MOV EVENTO,#0
+		RET
+	STOP_RV_OUT:
+    		CLR RV_OUT      	;Detiene movimiento hacia fuera[P1.6=0]
+	
+	;DESPUES, EL PUENTE SE MUEVE (B_MOV_B=1[P1.1=1]) HACIA LA PARTE DELANTERA DEL COCHE HASTA DETECTARLO (S_CAR=1[P2.3]) Y AHI SE PARA EL PUENTE (B_MOV_B=0[P1.1=0])
+	SETB B_MOV_B        		;MUEVE PUENTE [P1.1=1]
+	ESP_S_CAR:
+    		JB MIRADO, STOP_B_MOV_B
+		JB S_CAR, STOP_B_MOV_B 	;Si se detecta vehículo [P2.3=1], SALTA
+    		MOV EVENTO, #0
+		RET
+		;SJMP ESP_S_CAR        	;BRK3-----
+	STOP_B_MOV_B:
+    		CLR B_MOV_B     	;PARAR EL PUENTE [P1.1=0]
+
+	;EL RODILLO HORIZ BAJA (RH_DOWN=1[P1.4=1])HASTA ESTAR A 40CM DEL COCHE Y LOS VERTICALES SE MUEVEN HACIA DENTRO (RV_IN=1[P1.7=1]) HASTA QUEDAR A 40CM DEL COCHE
+	SETB RH_DOWN        		;Activa movimiento hacia abajo[P1.4=1]
+
+	;AQUI CUANDO HAGAMOS EL DEBUG PONEMOS EN AIN0 UN 2 = 40CM
+	ESP_RH_40:
+		ACALL LEE_ADC_RH    		;Leer posición actual (SPOS_RH)
+    	ESP_RH_40_1:
+    		JNB TICK_ADC, ESP_RH_40_1 	;ESPERA A QUE EL TICK SE PONGA A 1
+		MOV A, ADCH
+		CJNE A, #102, VUELVEINI 	;Compara con 40 cm (#66H)(valor digital) y salta si no son iguales |BRK4-----
+    		CLR RH_DOWN      		;Detiene movimiento hacia abajo CUANDO YA SON IGUALES [P1.4=0]
+
+
+	;Mover rodillos verticales a 40 cm
+	SETB RV_IN           			;Activa movimiento hacia dentro [P1.7=1]
+	
+	;AQUI CUANDO HAGAMOS EL DEBUG PONEMOS EN AIN1 UN 2 = 40CM
+	ESP_RV_40:
+		ACALL LEE_ADC_RV    ;		Leer posición actual (SPOS_RV)
+    	ESP_RV_40_1:
+    		JNB TICK_ADC, ESP_RV_40_1 	;ESPERA A QUE EL TICK SE PONGA A 1
+		MOV A, ADCH
+		CJNE A, #102, VUELVEINI  	;Compara con 40 cm (#66H) (valor digital) y salta si no son iguales |BRK5----
+    		CLR RV_IN     			;Detiene movimiento hacia DENTRO CUANDO YA SON IGUALES [P1.7=0]
+
+	SETB NOVUELVAS
+	JB NOVUELVAS, SEGUIDO
+	VUELVEINI:
+		MOV EVENTO,#0
+		RET
+	;Y DESPUES EL PUENTE AVANZA HASTA SU POSICION ORIGINAL (B_MOV_B=1[P1.1=0]) MIENTRAS MIDE LAS DISTANCIAS DE AMBOS JUEGOS DE RODILLOS
+	;SI EN ALGUN MOMENTO LA DISTANCIA ES >42,5 O <37,5 LOS RODILLOS SE MOVERÁN ALEJANDOSE O ACERCANDOSE (RH_UP, RH_DOWN, RV_OUT, RH_IN)      	
+
+	SEGUIDO:
+	SETB B_MOV_B        			;Activa movimiento hacia delante [P1.1=0]
+	ACALL INICIAR_TIMER_0
+	CLR FLAG_TIMER_4S2
+	MOV VALOR1, #8
+	MOV VALOR2, #1
+	MOV R0, #8
+	MOV R1, #1
+	CLR FLAG_EST9
+	SETB FLAG_TIMER_100MS
+	SETB FLAGDIST100		;BRK6-----
+
+	;CADA 100MS HACER ESTE BUCLE
+		SALTO_100MS:
+			JNB FLAGDIST100, CHECK_DIST_H		
+			SJMP SALTO_100MS
+
+ 		BUCLE_100MS:
+			;LJMP VUELTA100MS
+
+			
+	CHECK_DIST_H:		
+		ACALL INICIAR_TIMER_0
+		CLR FLAG_TIMER_4S2
+		MOV VALOR1, #8
+		MOV VALOR2, #1
+		MOV R0, #8
+		MOV R1, #1
+		CLR FLAG_EST9
+		SETB FLAG_TIMER_100MS
+		SETB FLAGDIST100
+		JNB S_CAR, RH_UP_Y_STOP 	;Si no hay vehículo[P2.3=0], SALTA A retirar rodillo | BRK7--------
+		SETB FLAGDIST100
+		ACALL LEE_ADC_RH 		;Leer posición actual del rodillo horizontal
+
+	CHECK_DIST_H_1:
+		JNB TICK_ADC,CHECK_DIST_H_1
+  	        
+		MOV A, ADCH
+		CLR C 				;LIMPIAR EL CARRY
+		SUBB A, #96 			;PONER LIMITE INFERIOR
+		JC MUY_CERCA_RH			;SALTA SI C=1
+		JNC MIRO1
+		MUY_CERCA_RH:
+			ACALL MUY_CERCA_RH1
+
+		MIRO1:
+		MOV A, ADCH
+		CLR C 				;LIMPIAR EL CARRY
+		SUBB A, #108 			;PONER LIMITE superior
+		JNC MUY_LEJOS_RH		;SALTA SI C=1
+		JC IGU1
+		MUY_LEJOS_RH:
+			ACALL MUY_LEJOS_RH1
+
+		IGU1:
+		MOV A, ADCH
+		CLR C 				;LIMPIAR EL CARRY
+		CJNE A, #102, CHECK_DIST_V  	;Compara con 40 cm (valor digital) y salta si no son iguales
+		;si son iguales hace esto:
+		CLR RH_UP		;[P1.3=0]
+		CLR RH_DOWN		;[P1.4=0]
+
+
+	CHECK_DIST_V:
+    		ACALL LEE_ADC_RV 		;Leer posición actual del rodillo vertical
+		
+    	CHECK_DIST_V_1:
+		JNB TICK_ADC,CHECK_DIST_V_1
+
+		MOV A, ADCH
+		CLR C 				;LIMPIAR EL CARRY
+		SUBB A, #96 			;PONER LIMITE INFERIOR
+		JC MUY_CERCA_RV			;SALTA SI C=1
+		JNC MIRO2
+		MUY_CERCA_RV:
+			ACALL MUY_CERCA_RV1
+
+		MIRO2:
+		MOV A, ADCH
+		CLR C 				;LIMPIAR EL CARRY
+		SUBB A, #108 			;PONER LIMITE superior
+		JNC MUY_LEJOS_RV		;SALTA SI C=1
+		JC IGU2
+		MUY_LEJOS_RV:
+			ACALL MUY_LEJOS_RV1
+
+		IGU2:
+		MOV A, ADCH
+		CLR C 				;LIMPIAR EL CARRY
+		CJNE A, #102, SIGO  	;Compara con 40 cm (valor digital) y salta si no son iguales
+		;si son iguales hace esto:
+		CLR RV_IN		;[P1.7=0]
+    		CLR RV_OUT		;[P1.6=0]		
+	
+	SIGO:
+	;TRAS TERMINAR AMBOS BUCLES
+	ACALL INICIAR_TIMER_0	;VOLVEMOS A INICIAR TIMER 100MS
+	SJMP SALTO_100MS      ;Sigue revisando CADA 100MS HASTA QUE [P2.3=0] 
+
+
+	;ACCIONES QUE HACE DEPENDIENDO DE LA DISTANCIA
+	MUY_CERCA_RH1:
+    		SETB RH_UP		;[P1.3=1]
+		CLR RH_DOWN		;[P1.4=0]
+    		;SJMP CHECK_DIST_H
+		RET
+
+	MUY_LEJOS_RH1:
+		SETB RH_DOWN		;[P1.4=1]
+    		CLR RH_UP		;[P1.3=0]
+		;SJMP CHECK_DIST_H
+		RET
+
+	MUY_CERCA_RV1:
+		SETB RV_OUT		;[P1.6=1]
+    		CLR RV_IN		;[P1.7=0]
+		;SJMP CHECK_DIST_H
+		RET
+
+	MUY_LEJOS_RV1:
+		SETB RV_IN		;[P1.7=1]
+    		CLR RV_OUT		;[P1.6=0]
+		;SJMP CHECK_DIST_H
+		RET
+
+
+	;CUANDO EL EJE NO DETECTE VEHICULO (S_CAR=0[P2.3]) SE RETIRA RODILLO HORIZONTAL HACIA ARRIBA (RH_UP=1[P1.3]) HASTA QUE FC_RH_T=1[P1.2=1]. 
+	RH_UP_Y_STOP:
+		SETB RH_UP        		;Retirar rodillo hacia arriba [P1.3=1] | BRK8----
+		CLR FLAG_TIMER_100MS
+		CLR TR0
+		ACALL APAGAR_TIMER_0
+	WAIT_RH_TOP:
+		JB FC_RH_T, STOP_RH_UP 		;Esperar a que llegue al tope [P1.2=1] | BRK9------
+		MOV EVENTO,#0
+		SETB MIRADO
+		RET
+	
+	STOP_RH_UP:
+		CLR RH_UP        		;Detener movimiento hacia arriba [P1.3=0]
+
+
+
+	;DESPUES EL PUENTE AVANZA (B_MOV_B=1[P1.1]) 40CM MAS (4 SEGS)	
+	SETB FLAG_TIMER_4S
+	MOV VALOR1,#76
+	MOV VALOR2,#4
+	ACALL INICIAR_TIMER_0
+	CHECKEAR4S:
+		JNB FLAG_TIMER_4S, PARO_4S	;BRK10--------
+		SJMP CHECKEAR4S
+
+
+	PARO_4S:
+		CLR B_MOV_B ; TRAS 4 SEGUNDOS [P1.1=0] |BRK11--------
+		ACALL APAGAR_TIMER_0
+	
+		
+	;Y DESPUES RODILLOS VERTICALES SE MUEVEN HACIA DENTRO (RV_IN=1[P1.7]) HASTA CONSEGUIR ESTAR A 80CM UNO DEL OTRO, LA SEÑAL FC_RV_C[P2.4] INDICA CUANDO SE HA CONSEGUIDO ESTA POSICIÓN
+	;TRAS ESTO, EMPRENDEN EL CAMINO DE VUELTA (RV_OUT=1[P1.6]) HASTA LLEGAR AL BORDE DEL PUENTE (FC_RV_B=1[P1.5]) AQUI YA SE HA LIMPIADO TODO EL COCHE	
+	SETB RV_IN				;[P1.7=1]
+	WAIT_RV_CENTRO_2:
+    		JB FC_RV_C, STOP_RV_IN_2 	;SI FC_RV_C[P2.4]=1, SALTA | BRK12------
+    		MOV EVENTO,#0
+		RET
+	
+	STOP_RV_IN_2:
+    		CLR RV_IN			;[P1.7=0]
+
+	SETB RV_OUT				;[P1.6=1]
+	
+	WAIT_RV_BORDE_2:
+    		JB FC_RV_B, STOP_RV_OUT_2 	;SI FC_RV_B[P1.5]=1, SALTA |BRK13--------
+    		MOV EVENTO,#0
+		RET
+	
+	STOP_RV_OUT_2:
+    		CLR RV_OUT			;[P1.6]=0
+
+	;SALTA AL EVENTO 10
+	CLR FLAG_TIMER7
+	MOV EVENTO, #1 ;event numero 0 en la lista DEL ESTADO 6
+	RET
+
+	;-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+	;subrutinas para leer ADC
+	LEE_ADC_RH: ;Leer posición actual (SPOS_RH)
+		CLR TICK_ADC
+		MOV ADCON, #00001000B		;Selecciona P5.0 (SPOS_RH)
+    		ORL ADCON, #80H    		;Pone a 1 el bit 7 (0x80 es 10000000 en binario) 
+		RET 				;HASTA Q SALTE INTERRUP SE QUEDA AQUI
+	
+	LEE_ADC_RV: ;Leer posición actual (SPOS_RV)
+		CLR TICK_ADC
+		MOV ADCON, #00001001B		;Selecciona P5.1 (SPOS_RV)        
+    		ORL ADCON, #80H    		;Pone a 1 el bit 7 (0x80 es 10000000 en binario)
+		RET				;HASTA Q SALTE INTERRUP SE PONE QUEDA AQUI
+	
+	;INTERRUP PRINCIPAL DEL ADC
+	LEER_ADC:
+		PUSH ACC
+		PUSH PSW
+		SETB TICK_ADC
+		ANL ADCON, #11101111B 		;Para poner a 0 ADCI
+    		POP PSW
+		POP ACC
+		RETI                     	 
+
+	;POTENCIA DE LOS RODILLOS
+	ACTRODINT:
+		MOV A, #PWM_INTR  		;según el tipo de lavado
+    		MOV PWM0, A         		;Configura PWM0 con el duty cycle deseado
+		;LJMP ESP80CM 			;SALTO PARA COMENZAR
+		RET
+
+	ACTRODNORM:
+		MOV A, #PWM_NORR  		;según el tipo de lavado
+    		MOV PWM0, A         		;Configura PWM0 con el duty cycle deseado
+		;LJMP ESP80CM 			;SALTO PARA COMENZAR
+		RET
+
+	RET
+
+;ESSTADO 7 == ACLARADO --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+MQ_EVEN_7:	
+ 	MOV A, EVENTO
+    	RL A
+    	MOV DPTR, #LIST_EVEN_MQEV_7
+    	JMP @A+DPTR
+
+LIST_EVEN_MQEV_7:
+    	AJMP ME7_EV_0
+	AJMP ME7_EV_11
+
+ME7_EV_0:
+	RET
+ME7_EV_11: ;EL SENSOR NO DETECTA EL COCHE (S_CAR=0[P2.3])-->APAGAR BOMBA DE AGUA (EV_AGU=0[P2.0]), MOVER PUENTE(B_MOV_F[P1.0])4 SEGUNDOS MAS Y PASAR A ESTADO 8
+	CLR EV_AGU
+	CLR FLAG_TIMER7
+	RET
+
+CAMBIOE:
+	CLR B_MOV_F
+	MOV ESTADO, #8             	;Siguiente ESTADO : 8
+	RET
+
+ES7_GEN_EV:
+	SETB B_MOV_F
+	JB S_CAR, DETEC_7 	;Si S_CAR[P2.3] = 1, SALTA
+	JNB S_CAR, SEGUIR_7	;SI NO DETECTA COCHE, SIGUE AVANZANDO |BRK-------
+	;JNB FLAG_TIMER, SEGUIR_7 ;(ANTES SOLO PONIA SEGUIR EN AMBAS)
+	;MOV EVENTO, #2
+	RET
+DETEC_7:
+	SETB EV_AGU  ;ACTIVAR AGUA [P2.0]=1
+	SETB PRIMER7
+	RET	 				;BRK2-----
+SEGUIR_7: 
+	JNB PRIMER7, EVEN70
+	JB  PRIMER7, EVEN71
+
+	EVEN70:		
+		MOV EVENTO, #0
+		JB FLAG_TIMER7, CAMBIOE
+		RET
+
+	EVEN71:
+		MOV VALOR2, #4
+		ACALL INICIAR_TIMER_0
+		MOV EVENTO, #1
+		CLR PRIMER7
+		RET
+	RET
+
+;estado 8 == SECADO --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+MQ_EVEN_8:
+	ACALL ES8_GEN_EV 
+    	MOV A, EVENTO
+   	RL A
+    	MOV DPTR, #LIST_EVEN_MQEV_8
+    	JMP @A+DPTR
+
+LIST_EVEN_MQEV_8:
+    	AJMP ME8_EV_0
+	AJMP ME8_EV_12
+
+ME8_EV_0:
+	RET
+
+ME8_EV_12:
+	;FIN DEL SECADO (B_START=1[P0.7])-->APAGAR SECADORES[PWM1=0], APAGAR SEM ROJO[P0.1=0], Y PASA AL ESTADO 9
+	CLR SEM_R		;[P0.1=0]
+	CLR B_MOV_B 		;DEJA DE AVANZAR PUENTE [P1.1=0]
+	SETB B_START
+	;APAGAR SECADORES
+	MOV A, #0      		;Duty cycle 0%
+	MOV PWM1, A    		;Apagar PWM1
+	MOV ESTADO, #9
+	RET
+
+
+ES8_GEN_EV:
+	;SE MUEVE EL PUENTE (B_MOV_B[P1.1]) Y SOLO SE ACTIVA VENTILADORES CUANDO SE DETECTA COCHE. 
+	;CUANDO TERMINA ESTO EL PUENTE AVANZA HASTA SU POSICION INICIAL(B_START=1[P0.7]) ->EVENTO 12
+	;POTENCIA SECADORES EN PWM1
+
+	;al principio del estado los secadores estan apagados
+	MOV A, #0      			;Duty cycle 0%
+	MOV PWM1, A    			;Apagar PWM1
+	SETB B_MOV_B 			;MOVER PUENTE [P1.1]=1
+	JB FLAGALFIN, NODETEC_8
+
+	CHECKS8: 
+		JB S_CAR, DETEC_8 	;Si S_CAR[P2.3]=1, salta. |BRK--------------
+		MOV EVENTO, #0
+		RET
+		;LJMP CHECKS8
+	DETEC_8:
+		JB F_TIPO, ACTINT	;SI [P0.3]=1 SALTA A ACTIVAR SECADO INTENSO
+		JNB F_TIPO, ACTNORM	;SI [P0.3]=0 SALTA A ACTIVAR SECADO NORMAL
+  	        LJMP CHECKFIN8
+
+	CHECKFIN8:
+		JNB S_CAR, NODETEC_8 	;CUANDO S_CAR=0[P2.3] (DEJA DE DETECTAR COCHE) SALTA
+		;MOV EVENTO, #0
+		;RET			
+		;LJMP CHECKFIN8		;SINO SIGUE MIRANDO HASTA QUE DEJE DE DETECTAR COCHE |BRK2---------
+		MOV EVENTO,#0
+		SETB FLAGALFIN
+		RET
+
+	NODETEC_8:;DEJA DE DETECTAR COCHE Y AVANZA HASTA SU POSICION ORIGINAL (B_START=1)--> EVENTO 12
+		MOV EVENTO, #1 		;evento numero 1 en la lista DEL ESTADO 8
+		RET 
+
+	ACTINT:
+		MOV A, #PWM_INTV  	;según el tipo de lavado
+    		MOV PWM1, A         	;Configura PWM1 con el duty cycle deseado
+		LJMP CHECKFIN8
+		RET
+
+	ACTNORM:
+		MOV A, #PWM_NORV  	;según el tipo de lavado
+    		MOV PWM1, A         	;Configura PWM1 con el duty cycle deseado
+		LJMP CHECKFIN8
+		RET	
+
+	RET
+
+;estado 9 == FINALIZADO --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+MQ_EVEN_9:
+	ACALL ES9_GEN_EV
+    	MOV A, EVENTO
+    	RL A
+    	MOV DPTR, #LIST_EVEN_MQEV_9
+    	JMP @A+DPTR
+
+LIST_EVEN_MQEV_9:
+    	AJMP ME9_EV_0
+	AJMP ME9_EV_13
+
+ME9_EV_0:
+	RET
+
+ME9_EV_13: ; SE RETIRA EL COCHE (S_PLAT=0[P0.2])--> SEM_V=1[P0.0] Y PASA A ESTADO 0
+	SETB SEM_V		;[P0.0]=1
+	MOV A, #0             	;Siguiente ESTADO : 0
+	MOV ESTADO, A         	;CAMBIAMOS DE ESTADO
+	AJMP MAQ_ESTADOS
+	RET
+
+
+ES9_GEN_EV:
+	;PARPADEA SEMAFORO VERDE HASTA QUE EL USUARIO RETIRE EL VEHICULO (S_PLAT=0[P0.2]) -> EVENTO 13
+	MOV VALOR1,#76
+	MOV VALOR2,#1
+	ACALL INICIAR_TIMER_0	;INICIAMOS TIMER PARA PARPADEO DEL SEMAFORO DEL ESTADO 9
+	SETB FLAG_EST9
+
+	BUC:
+	JB FLAG_EST9, BUC
+	
+	
+	CHECKS9: 
+		JNB S_PLAT, SEVA_9 	;Si S_PLAT[P0.2]=0, salta.	        
+		MOV EVENTO, #0
+		CPL SEM_V		;BRK--------------------
+		RET
+		;LJMP CHECKS9
+	SEVA_9:
+		MOV EVENTO, #1 		;evento numero 1 en la lista DEL ESTADO 9
+		ACALL APAGAR_TIMER_0
+	;	LJMP ME9_EV_13 		;SALTA AL EVENTO 
+		RET
+	RET
+
+;-------------------------------------------------------------FIN ESTADOS-------------------------------------------------------------------------------------------------------------------
+
+;que hacemos cuando se genere una interrup del timer
+
+INICIAR_TIMER_0:
+	MOV TMOD, #00010001B    ;Configura el registro TMOD: 0x01 configura el Timer 0, Y EL TIMER 1 en modo 1 (16-bit Timer Mode).
+	MOV IE, #11000010B      ;Configura el registro IE: 0x82 habilita la interrupción del TIMER 0, DEL TIMER 1 y habilita las interrupciones globales. 
+	MOV TH0, #0CCH       	;Carga el valor  en el registro TH0: Este valor establece la parte alta del TIMER 0. 	ESTO SE PONE CUANDO SE USE
+	MOV TL0, #0DCH       	;Carga el valor  en el registro TL0: Este valor establece la parte baja del TIMER 0.	ESTO SE PONE CUANDO SE USE
+	MOV R0, VALOR1 		;Contador de desbordamientos TENDRÍA QUE SER 955 PERO EL MAXIMO ES 255, POR LO TANTO PODEMOS APROXIMAR 76 5 VECES
+	CLR FLAG_TIMER
+	MOV R1, VALOR2		;4 ó 5 VECES
+	SETB TR0		;INICIAR EL TIMER0
+;	SETB ESF
+	RET
+
+APAGAR_TIMER_0:
+	CLR TR0
+	RET
+
+INICIAR_TIMER_1:
+	MOV TMOD, #11H      	;Configura el registro TMOD: 0x01 configura el Timer 0, Y EL TIMER 1 en modo 1 (16-bit Timer Mode).
+	MOV IE, #8AH        	;Configura el registro IE: 0x82 habilita la interrupción del TIMER 0, DEL TIMER 1 y habilita las interrupciones globales. 
+	;SETB TR1
+	MOV TH1, #0CCH       	;Carga el valor  en el registro TH1: Este valor establece la parte alta del TIMER 1. 	ESTO SE PONE CUANDO SE USE
+	MOV TL1, #0DCH       	;Carga el valor  en el registro TL1: Este valor establece la parte baja del TIMER 1.	ESTO SE PONE CUANDO SE USE
+	MOV R3, #76 		;Contador de desbordamientos TENDRÍA QUE SER 5730 PERO EL MAXIMO ES 255, POR LO TANTO PODEMOS APROXIMAR 76 30 VECES
+	MOV R4, #30		;30 VECES 
+	SETB TR1		;INICIAR EL TIMER1
+	RET
+APAGAR_TIMER_1:
+	CLR TR1
+	;CLR ESF
+	RET
+TIMER_0:
+	PUSH ACC
+	PUSH PSW
+	MOV TH0, #0CCH
+	MOV TL0, #0DCH
+	DJNZ R0, CONTINUAR 	;DECREMENTA R0 Y SI R0 NO ES 0 SALTA A CONTINUAR
+	MOV R0, VALOR1 		;RESETEAMOS R0
+	DJNZ R1, FIN		
+	MOV R1, VALOR2 		;RESETEAMOS R1
+	CLR TR0			;PARAR TIMER0	 
+	SETB FLAG_TIMER
+	SETB FLAG_TIMER7
+	CLR FLAG_EST9
+	CLR FLAGDIST100		;FLAG 100MS
+	CLR FLAG_TIMER_4S	;flag 4 segs estado 6
+;	CLR ESF
+	POP PSW
+	POP ACC
+	RETI
+
+CONTINUAR:	
+	SETB TR0		;ACTIVAR TIMER0
+	POP PSW
+	POP ACC
+	RETI
+FIN:
+	SETB TR0		;ACTIVAR TIMER0
+	POP PSW
+	POP ACC
+	RETI
+
+TIMER_1:
+	PUSH ACC
+	PUSH PSW
+	CLR TR1 		;DETENER TIMER
+	MOV TH1, #0CCH
+	MOV TL1, #0DCH
+	DJNZ R3, CONTINUAR_1 	;DECREMENTA R0 Y SI R0 NO ES 0 SALTA A CONTINUAR
+	MOV R3, #76 		;RESETEAMOS R0
+	DJNZ R4, FIN_1		;DECREMENTA R1 Y SI R1 NO ES 0 SALTA A FIN
+	MOV R4, #30 		;RESETEAMOS R1
+	DJNZ R5, PRIMERA_VEZ
+	SETB FLAG_E4
+	CLR TR1			;PARAR TIMER0
+	POP PSW
+	POP ACC
+
+PRIMERA_VEZ:
+	SETB FLAG_PRIMERA
+	SETB TR1
+	POP PSW
+	POP ACC
+	RETI
+CONTINUAR_1:
+	SETB TR1	;ACTIVAR TIMER0
+	POP PSW
+	POP ACC
+	RETI
+
+FIN_1:
+	SETB TR1	;ACTIVAR TIMER0
+	POP PSW
+	POP ACC
+	RETI
+
+
+END
